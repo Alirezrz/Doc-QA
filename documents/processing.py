@@ -33,7 +33,7 @@ def extract_text(file_path):
     return '\n'.join(paragraphs)
 
 
-def split_into_chunks(text: str, chunk_size: int = 500, overlap: int = 50):
+def split_into_chunks(text: str, chunk_size: int = 80, overlap: int = 15):
 
     words = text.split()  
     chunks = []
