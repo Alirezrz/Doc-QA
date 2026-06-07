@@ -11,11 +11,14 @@ A production-grade **Retrieval-Augmented Generation (RAG)** API built with Djang
 3. [The Math Behind Everything](#the-math-behind-everything)
 4. [Project Structure](#project-structure)
 5. [Setup & Installation](#setup--installation)
-6. [Running the Server](#running-the-server)
+   - [Option A — Run locally (no Docker)](#option-a--run-locally-no-docker)
+   - [Option B — Run with Docker](#option-b--run-with-docker)
+6. [Admin Panel](#admin-panel)
 7. [API Reference & Usage](#api-reference--usage)
-8. [End-to-End Example](#end-to-end-example)
-9. [Configuration](#configuration)
-10. [What's Next](#whats-next)
+8. [Sample Documents](#sample-documents)
+9. [End-to-End Example](#end-to-end-example)
+10. [Configuration](#configuration)
+11. [What's Next](#whats-next)
 
 ---
 
@@ -198,7 +201,7 @@ Breaking down every symbol:
 log( ─────────────── + 1 )
       df(t) + 0.5
 ```
-This is **Inverse Document Frequency**. Words that appear in every chunk ("the", "is", "a") get IDF ≈ 0 — they tell us nothing. Words that appear in only 2 out of 500 chunks ("arbitration", "photosynthesis") get high IDF — they're discriminating.
+Words that appear in every chunk ("the", "is", "a") get IDF ≈ 0. Words that appear in only 2 out of 500 chunks ("arbitration", "photosynthesis") get high IDF — they're discriminating.
 
 **The TF_norm part** (right of the ×):
 ```
@@ -206,11 +209,7 @@ tf(t,d) × (k₁ + 1)
 ────────────────────────────────────────
 tf(t,d) + k₁ × (1 - b + b × |d|/avgdl)
 ```
-This normalizes term frequency by chunk length. A chunk that says "contract" 5 times in 100 words is more relevant than one that says "contract" 5 times in 2000 words. The `b` parameter controls how aggressively we penalize long chunks.
-
-**Why use BM25 at all if we have embeddings?**
-
-Embeddings compress meaning into 384 numbers. In that compression, rare technical terms — article numbers, proper nouns, codes — can get washed out. BM25 never loses a keyword. It scores zero for a missing term and high for an exact match. The two methods cover each other's blind spots.
+A chunk that says "contract" 5 times in 100 words is more relevant than one that says it 5 times in 2000 words. The `b` parameter controls how aggressively we penalize long chunks.
 
 ---
 
@@ -224,8 +223,6 @@ similarity(paraᵢ, paraᵢ₊₁) = cosine(embed(paraᵢ), embed(paraᵢ₊₁)
 
 If `similarity < 0.45` → the meaning shifted → split here.
 
-This threshold (0.45) was chosen empirically. Lower it to get fewer, larger chunks. Raise it to get more, smaller chunks. The intuition: paragraphs continuing the same thought typically score 0.6–0.9. Paragraphs starting a new topic drop below 0.5.
-
 ```python
 SEMANTIC_SPLIT_THRESHOLD = 0.45  # in processing.py — tune this freely
 MAX_CHUNK_WORDS = 600            # hard cap regardless of similarity
@@ -235,9 +232,7 @@ MAX_CHUNK_WORDS = 600            # hard cap regardless of similarity
 
 ### Reciprocal Rank Fusion (Hybrid Search Fusion)
 
-After dense retrieval gives us one ranked list and BM25 gives us another, we need to combine them. We can't just add the raw scores — cosine similarity lives in [-1, 1] while BM25 scores are unbounded floats (could be 0.2 or 45.0). Adding them raw lets BM25 dominate just because its numbers are bigger.
-
-**RRF works on ranks, not scores.** Ranks are scale-free: rank 1 means the same thing regardless of which system produced it.
+RRF works on ranks, not raw scores — so the scale difference between cosine (0–1) and BM25 (0–∞) doesn't matter.
 
 ```
            1                    1
@@ -247,20 +242,17 @@ RRF(d) = ─────────────── + ───────�
 K = 60  (standard constant)
 ```
 
-The K=60 constant softens the advantage of being rank 1 vs rank 2. Without it, rank 1 gets score 1.0 and rank 2 gets 0.5 — a huge cliff. With K=60, rank 1 gets 1/61 ≈ 0.0164 and rank 2 gets 1/62 ≈ 0.0161 — much more gradual.
-
-**Example with 3 chunks (A, B, C):**
-
+Example with 3 chunks:
 ```
 Dense ranking:   A=1,  B=2,  C=3
 BM25  ranking:   B=1,  A=2,  C=3
 
-RRF(A) = 1/(60+1) + 1/(60+2) = 0.01639 + 0.01613 = 0.03252
-RRF(B) = 1/(60+2) + 1/(60+1) = 0.01613 + 0.01639 = 0.03252
-RRF(C) = 1/(60+3) + 1/(60+3) = 0.01587 + 0.01587 = 0.03175
+RRF(A) = 1/(60+1) + 1/(60+2) = 0.03252
+RRF(B) = 1/(60+2) + 1/(60+1) = 0.03252
+RRF(C) = 1/(60+3) + 1/(60+3) = 0.03175
 ```
 
-A and B are tied — each appears near the top of one list. C is last in both — lowest combined score. This is exactly right: the system rewards chunks that multiple retrieval methods agree on.
+A and B both appear near the top in both lists → tied. C is last in both → lowest score.
 
 ---
 
@@ -275,31 +267,30 @@ Doc-QA/
 │   └── wsgi.py
 │
 ├── documents/                   # Ingestion app
-│   ├── models.py                # Document + DocumentChunk (with embeddings + BM25)
-│   ├── processing.py            # The full indexing pipeline
-│   │   ├── extract_structured_paragraphs()   # .docx → tagged paragraphs
-│   │   ├── semantic_chunk()                  # Smart chunking
-│   │   ├── compute_bm25_stats()              # Term frequency indexing
-│   │   ├── generate_embedding()              # MiniLM encoding
-│   │   └── process_document()               # Orchestrates all of the above
-│   ├── serializers.py           # REST serializer (includes chunk_count)
-│   ├── signals.py               # Triggers process_document() on upload
+│   ├── models.py                # Document + DocumentChunk (embeddings + BM25)
+│   ├── processing.py            # Full indexing pipeline
+│   ├── signals.py               # Triggers processing on upload
 │   ├── views.py                 # DocumentViewSet (full CRUD)
 │   └── urls.py                  # /api/documents/
 │
 ├── qa/                          # Query app
-│   ├── models.py                # QAHistory (stores every Q&A + source docs)
-│   ├── pipeline.py              # The full query pipeline
-│   │   ├── cosine_similarity()              # Dense scoring
-│   │   ├── compute_bm25_scores()            # BM25 scoring
-│   │   ├── reciprocal_rank_fusion()         # RRF fusion
-│   │   ├── find_relevant_chunks()           # Hybrid retrieval (all three above)
-│   │   └── ask_question()                   # Full RAG: retrieve → prompt → LLM
-│   ├── serializers.py           # QAHistorySerializer
-│   ├── views.py                 # AskView (POST) + HistoryView (GET)
+│   ├── models.py                # QAHistory
+│   ├── pipeline.py              # Hybrid search + LLM generation
+│   ├── admin.py                 # Admin panel with Ask a Question page
+│   ├── views.py                 # AskView + HistoryView
 │   └── urls.py                  # /api/ask/ and /api/history/
 │
-├── .env.example                 # Copy this to .env and fill in your keys
+├── templates/                   # Django Admin custom templates
+│   └── admin/qa/qahistory/
+│       ├── ask.html             # Ask a Question page
+│       └── change_list.html     # Adds Ask button to history list
+│
+├── sample-Docs/                 # Sample .docx files for testing
+│
+├── Dockerfile                   # Container build instructions
+├── docker-compose.yml           # Container orchestration
+├── .dockerignore                # Files excluded from Docker image
+├── .env.example                 # Copy to .env and fill in your keys
 ├── requirements.txt
 └── manage.py
 ```
@@ -310,49 +301,11 @@ Doc-QA/
 
 ### Prerequisites
 
-- Python 3.9+
-- pip
+- Python 3.9+ (for local run)
+- Docker Desktop (for Docker run)
+- An [OpenRouter](https://openrouter.ai) API key
 
-### Step 1 — Clone and enter the project
-
-```bash
-git clone <your-repo-url>
-cd Doc-QA
-```
-
-### Step 2 — Create a virtual environment (recommended)
-
-```bash
-python -m venv venv
-
-# On Windows:
-venv\Scripts\activate
-
-# On Mac/Linux:
-source venv/bin/activate
-```
-
-### Step 3 — Install dependencies
-
-```bash
-pip install -r requirements.txt
-```
-
-This installs:
-
-| Package | Purpose |
-|---------|---------|
-| `django` | Web framework, ORM, signals |
-| `djangorestframework` | REST API layer (ViewSets, serializers) |
-| `python-docx` | Reads .docx files, exposes paragraphs and styles |
-| `sentence-transformers` | Loads MiniLM, encodes text to 384-dim vectors |
-| `langchain` + `langchain-openai` | LLM client abstraction (OpenRouter integration) |
-| `numpy` | Vector math (dot products, norms) |
-| `python-dotenv` | Loads .env file into environment variables |
-
-The first time `sentence-transformers` runs, it downloads the `all-MiniLM-L6-v2` model (~90MB) from HuggingFace. This is automatic and only happens once.
-
-### Step 4 — Configure environment variables
+### Configure environment variables
 
 ```bash
 cp .env.example .env
@@ -363,37 +316,120 @@ Edit `.env`:
 ```env
 SECRET_KEY=replace-this-with-a-long-random-string
 DEBUG=True
-OPENROUTER_API_KEY=sk-or-v1-your-key-from-openrouter.ai
+OPENROUTER_API_KEY=sk-or-v1-your-key-here
 OPENROUTER_MODEL=mistralai/mistral-7b-instruct
 ```
 
-Get your OpenRouter API key at [openrouter.ai](https://openrouter.ai). The model string must be a valid OpenRouter model identifier. Some good free/cheap options:
+---
 
-```
-mistralai/mistral-7b-instruct
-meta-llama/llama-3-8b-instruct
-google/gemma-7b-it
+### Option A — Run Locally (no Docker)
+
+**Step 1 — Create and activate a virtual environment:**
+
+```bash
+python -m venv venv
+
+# Windows:
+venv\Scripts\activate
+
+# Mac/Linux:
+source venv/bin/activate
 ```
 
-### Step 5 — Run database migrations
+**Step 2 — Install dependencies:**
+
+```bash
+pip install -r requirements.txt
+```
+
+The first run downloads `all-MiniLM-L6-v2` (~90MB) automatically from HuggingFace. This happens once.
+
+**Step 3 — Run migrations:**
 
 ```bash
 python manage.py migrate
 ```
 
-This creates all tables including `documents_document`, `documents_documentchunk`, and `qa_qahistory`.
+**Step 4 — Create an admin user:**
 
----
+```bash
+python manage.py createsuperuser
+```
 
-## Running the Server
+**Step 5 — Start the server:**
 
 ```bash
 python manage.py runserver
 ```
 
-The server starts at `http://localhost:8000`.
+The app is now running at `http://localhost:8000`.
 
-You can browse the API directly in your browser at `http://localhost:8000/api/` — Django REST Framework provides a web UI out of the box.
+**To stop:** `Ctrl+C`
+
+**To start again:** just run `python manage.py runserver` — your data persists in `db.sqlite3`.
+
+---
+
+### Option B — Run with Docker
+
+Docker packages the entire app — Python, dependencies, and the embedding model — into a self-contained container. No manual setup needed beyond Docker Desktop.
+
+**Prerequisites:** [Docker Desktop](https://www.docker.com/products/docker-desktop/) installed and running (you'll see "Engine running" in the bottom left).
+
+**Step 1 — Build and start:**
+
+```bash
+docker compose up --build
+```
+
+The first build takes 5–15 minutes — it installs all packages and downloads the MiniLM model inside the image. Every subsequent start is instant.
+
+You'll know it's ready when you see:
+```
+web-1  | Starting development server at http://0.0.0.0:8000/
+```
+
+**Step 2 — Create an admin user** (open a new terminal, keep the first one running):
+
+```bash
+docker compose exec web python manage.py createsuperuser
+```
+
+**The app is now running at `http://localhost:8000`.**
+
+---
+
+**Docker commands reference:**
+
+| Command | What it does |
+|---------|-------------|
+| `docker compose up --build` | Build image and start (first time or after code changes) |
+| `docker compose up` | Start normally — fast, no rebuild, data preserved |
+| `docker compose down` | Stop the container, keep all data |
+| `docker compose down -v` | Stop and **wipe all data** (fresh start) |
+| `docker compose exec web python manage.py createsuperuser` | Create admin user |
+| `docker compose logs -f` | Watch live server logs |
+
+> **Data persistence:** Uploaded documents and the database survive `docker compose down` and `docker compose up` via named Docker volumes. Use `docker compose down -v` only when you want a completely clean slate.
+
+---
+
+## Admin Panel
+
+The Django Admin panel at `http://localhost:8000/admin/` gives you a full UI to manage everything without touching the API.
+
+**Login:** use the superuser credentials you created above.
+
+**What you can do:**
+
+**Documents section:**
+- View all uploaded documents with chunk counts
+- See every chunk a document was split into
+- Delete documents
+
+**QA History section:**
+- View all past questions and answers with their source documents
+- **Ask a Question** — a blue button in the top right of the history list. Click it, type your question in plain text, hit Ask. The full RAG pipeline runs and the answer appears on the same page. No JSON, no curl, no Postman needed.
 
 ---
 
@@ -406,85 +442,32 @@ POST /api/documents/
 Content-Type: multipart/form-data
 ```
 
-**Fields:**
-
-| Field | Type | Required | Description |
-|-------|------|----------|-------------|
-| `title` | string | yes | A human-readable name for the document |
-| `file` | file | yes | A `.docx` Word document |
-
-**Example with curl:**
-
 ```bash
 curl -X POST http://localhost:8000/api/documents/ \
   -F "title=Employment Contract" \
   -F "file=@/path/to/contract.docx"
 ```
 
-**Example with Postman:**
-- Method: POST
-- URL: `http://localhost:8000/api/documents/`
-- Body: form-data
-  - `title` → `Employment Contract`
-  - `file` → select your .docx file
-
 **Response (201 Created):**
-
 ```json
 {
     "id": 1,
     "title": "Employment Contract",
-    "file": "/media/documents/contract.docx",
-    "extracted_text": "This Employment Agreement is entered into...",
-    "uploaded_at": "2026-06-06T19:00:00Z",
-    "updated_at": "2026-06-06T19:00:00Z",
+    "extracted_text": "This Employment Agreement...",
+    "uploaded_at": "2026-06-07T10:00:00Z",
     "chunk_count": 12
 }
 ```
 
-The `chunk_count` tells you how many chunks the document was split into. The indexing pipeline (extract → chunk → embed → BM25) ran automatically in the background.
-
-> **Note:** The first upload takes longer because the MiniLM model needs to load into memory. Subsequent uploads are faster.
-
 ---
 
-### List All Documents
-
-```
-GET /api/documents/
-```
+### List / Get / Delete Documents
 
 ```bash
-curl http://localhost:8000/api/documents/
+curl http://localhost:8000/api/documents/          # list all
+curl http://localhost:8000/api/documents/1/        # get one
+curl -X DELETE http://localhost:8000/api/documents/1/  # delete
 ```
-
-Returns a list of all uploaded documents ordered by upload date (newest first).
-
----
-
-### Get a Single Document
-
-```
-GET /api/documents/{id}/
-```
-
-```bash
-curl http://localhost:8000/api/documents/1/
-```
-
----
-
-### Delete a Document
-
-```
-DELETE /api/documents/{id}/
-```
-
-```bash
-curl -X DELETE http://localhost:8000/api/documents/1/
-```
-
-Returns `204 No Content`. The document, its file, and all its chunks are deleted.
 
 ---
 
@@ -495,104 +478,63 @@ POST /api/ask/
 Content-Type: application/json
 ```
 
-**Body:**
-
-```json
-{
-    "question": "What are the payment terms in the contract?"
-}
-```
-
-**Example with curl:**
-
 ```bash
 curl -X POST http://localhost:8000/api/ask/ \
   -H "Content-Type: application/json" \
-  -d '{"question": "What are the payment terms in the contract?"}'
+  -d '{"question": "What are the payment terms?"}'
 ```
 
 **Response (201 Created):**
-
 ```json
 {
     "id": 1,
-    "question": "What are the payment terms in the contract?",
-    "answer": "According to the contract, payment is due within 30 days of invoice. Late payments incur a 2% monthly interest charge.",
-    "sources": [
-        "Employment Contract"
-    ],
-    "created_at": "2026-06-06T19:30:00Z"
+    "question": "What are the payment terms?",
+    "answer": "Payment is due within 30 days of invoice.",
+    "sources": ["Employment Contract"],
+    "created_at": "2026-06-07T10:05:00Z"
 }
 ```
-
-| Field | What it means |
-|-------|---------------|
-| `answer` | The LLM's response, grounded in your documents |
-| `sources` | Which document(s) the relevant chunks came from |
-| `created_at` | When this Q&A was recorded |
-
-If the answer is not found in any document, the LLM will say so explicitly — it is instructed not to make things up.
 
 ---
 
 ### View Question History
 
-```
-GET /api/history/
-```
-
 ```bash
 curl http://localhost:8000/api/history/
 ```
 
-Returns all past questions and answers, newest first:
+Returns all past Q&As, newest first.
 
-```json
-[
-    {
-        "id": 3,
-        "question": "When does the contract expire?",
-        "answer": "The contract expires on December 31, 2025.",
-        "sources": ["Employment Contract"],
-        "created_at": "2026-06-06T19:35:00Z"
-    },
-    {
-        "id": 2,
-        "question": "What is the notice period?",
-        "answer": "The notice period is 30 days for either party.",
-        "sources": ["Employment Contract"],
-        "created_at": "2026-06-06T19:32:00Z"
-    }
-]
-```
+---
+
+## Sample Documents
+
+The `sample-Docs/` folder contains ready-to-use `.docx` files for testing. Upload one and start asking questions immediately without needing to prepare your own documents.
 
 ---
 
 ## End-to-End Example
 
-Here is the complete flow from zero to answered question:
-
-**1. Start the server:**
+**1. Start the server** (Docker or local — your choice):
 ```bash
-python manage.py runserver
+docker compose up          # Docker
+# or
+python manage.py runserver # local
 ```
 
-**2. Upload a document:**
+**2. Upload a sample document:**
 ```bash
 curl -X POST http://localhost:8000/api/documents/ \
   -F "title=World History 20th Century" \
-  -F "file=@history.docx"
+  -F "file=@sample-Docs/history.docx"
 ```
 
-You'll see in the server console:
+Server console output:
 ```
 Processing: World History 20th Century
   Extracted 47 paragraphs (18432 chars)
-Loading embedding model... (first time only)
-Model loaded!
   [Chunker] Semantic split at para 8 (sim=0.31)
   [Chunker] Semantic split at para 19 (sim=0.28)
-  [Chunker] Semantic split at para 31 (sim=0.38)
   Created 9 smart chunks
   Done! Saved 9 chunks with embeddings + BM25 stats
 ```
@@ -604,16 +546,6 @@ curl -X POST http://localhost:8000/api/ask/ \
   -d '{"question": "When did World War 1 start?"}'
 ```
 
-Server console:
-```
-[Pipeline] Question: When did World War 1 start?
-  [Hybrid] Dense top-1: chunk 2 (score=0.847)
-  [Hybrid] BM25  top-1: chunk 2 (score=12.431)
-[Pipeline] Retrieved 4 chunks via hybrid search
-[Pipeline] Calling mistralai/mistral-7b-instruct...
-[Pipeline] Got answer (52 chars)
-```
-
 Response:
 ```json
 {
@@ -621,20 +553,16 @@ Response:
     "question": "When did World War 1 start?",
     "answer": "World War I started on July 28, 1914.",
     "sources": ["World History 20th Century"],
-    "created_at": "2026-06-06T19:30:34Z"
+    "created_at": "2026-06-07T10:30:34Z"
 }
 ```
 
-**4. Check history:**
-```bash
-curl http://localhost:8000/api/history/
-```
+**4. Or ask via Admin panel:**
+Go to `http://localhost:8000/admin/qa/qahistory/` → click **Ask a Question** → type → hit Ask.
 
 ---
 
 ## Configuration
-
-All configuration lives in `.env`. No code changes needed to switch models or tune behavior.
 
 ### Environment Variables
 
@@ -643,52 +571,31 @@ All configuration lives in `.env`. No code changes needed to switch models or tu
 | `SECRET_KEY` | Django secret key | any long random string |
 | `DEBUG` | Debug mode | `True` or `False` |
 | `OPENROUTER_API_KEY` | Your OpenRouter API key | `sk-or-v1-...` |
-| `OPENROUTER_MODEL` | Model to use for generation | `mistralai/mistral-7b-instruct` |
+| `OPENROUTER_MODEL` | Model for answer generation | `mistralai/mistral-7b-instruct` |
 
-### Tunable Parameters in Code
+Some good free/cheap OpenRouter models:
+```
+mistralai/mistral-7b-instruct
+meta-llama/llama-3-8b-instruct
+google/gemma-7b-it
+```
 
-These constants control retrieval quality. Edit them directly in the source files:
+### Tunable Parameters
 
 **`documents/processing.py`**
-
 ```python
-SEMANTIC_SPLIT_THRESHOLD = 0.45  # Lower → fewer, bigger chunks
-                                  # Higher → more, smaller chunks
-
-MAX_CHUNK_WORDS = 600             # Hard cap per chunk
+SEMANTIC_SPLIT_THRESHOLD = 0.45  # Lower → fewer bigger chunks; Higher → more smaller chunks
+MAX_CHUNK_WORDS = 600            # Hard cap per chunk
 ```
 
 **`qa/pipeline.py`**
-
 ```python
-K1 = 1.5   # BM25 term frequency weight. Higher → more emphasis on repetition
-B  = 0.75  # BM25 length normalization. 0 = ignore length, 1 = full normalization
-RRF_K = 60 # Fusion constant. Higher → gentler rank advantage for top results
+K1 = 1.5    # BM25 term frequency weight
+B  = 0.75   # BM25 length normalization
+RRF_K = 60  # Fusion constant
 ```
 
-**`qa/views.py` → `find_relevant_chunks(question, top_k=4)`**
 
-Change `top_k` to pass more or fewer chunks to the LLM. More chunks = more context but higher token cost and risk of confusion.
-
----
-
-## What's Next
-
-The system is production-capable for small to medium document sets. Here are the natural next steps in order of impact:
-
-**Cross-encoder re-ranking** — After retrieving the top 10 chunks with hybrid search, run a cross-encoder (e.g. `cross-encoder/ms-marco-MiniLM-L6-v2`) to re-score and re-rank them before sending top 4 to the LLM. Cross-encoders compare the question and chunk together rather than separately, giving much more precise relevance judgement.
-
-**Vector database** — Replace SQLite JSON storage with ChromaDB or FAISS. Currently all chunk embeddings are loaded into Python memory on every query. With thousands of chunks this becomes slow. A proper vector DB uses Approximate Nearest Neighbor (ANN) search to retrieve top candidates in milliseconds.
-
-**Async processing** — Embedding generation runs synchronously inside the HTTP request. For large documents this can take 10–30 seconds and may time out. Moving it to Celery + Redis would let the upload endpoint return immediately and process in the background.
-
-**Multi-format support** — Extend `extract_structured_paragraphs()` to handle PDF, TXT, and Markdown. The rest of the pipeline needs no changes.
-
-**Stronger embedding model** — Swap `all-MiniLM-L6-v2` for `BAAI/bge-large-en-v1.5` in `get_model()`. Drop-in replacement, significantly better retrieval quality, especially on technical or domain-specific documents.
-
-**Multi-turn conversation** — Currently each question is independent. Passing the last few Q&A pairs as conversation history to the LLM would allow follow-up questions like "tell me more about that".
-
----
 
 ## Tech Stack
 
@@ -696,13 +603,13 @@ The system is production-capable for small to medium document sets. Here are the
 |-------|-----------|
 | Web framework | Django 4.2 + Django REST Framework |
 | Embedding model | `all-MiniLM-L6-v2` via sentence-transformers |
-| Keyword search | BM25 (implemented from scratch with NumPy) |
+| Keyword search | BM25 (implemented from scratch) |
 | Vector fusion | Reciprocal Rank Fusion (implemented from scratch) |
 | LLM provider | OpenRouter (OpenAI-compatible API) |
 | LLM client | LangChain `ChatOpenAI` adapter |
 | Document parsing | python-docx |
 | Database | SQLite (via Django ORM) |
-| Vector storage | JSON fields in SQLite |
+| Containerization | Docker + Docker Compose |
 
 ---
 
