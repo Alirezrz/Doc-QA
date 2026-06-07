@@ -1,0 +1,67 @@
+{% extends "admin/base_site.html" %}
+{% load i18n %}
+
+{% block title %}Ask a Question{% endblock %}
+
+{% block content %}
+<h1>Ask a Question</h1>
+<p style="color:#666; margin-bottom:20px;">
+  Type your question below. The system will search all uploaded documents
+  and generate an answer using the RAG pipeline.
+</p>
+
+<form method="post">
+  {% csrf_token %}
+  <div style="margin-bottom:16px;">
+    {{ form.question.label_tag }}
+    <div style="margin-top:6px;">{{ form.question }}</div>
+    {% if form.question.errors %}
+      <p style="color:red;">{{ form.question.errors }}</p>
+    {% endif %}
+  </div>
+  <button type="submit" class="default" style="
+    padding: 10px 24px;
+    font-size: 14px;
+    background: #417690;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+  ">
+    Ask
+  </button>
+  &nbsp;
+  <a href="../" style="font-size:13px; color:#666;">← Back to History</a>
+</form>
+
+{% if result %}
+<div style="
+  margin-top: 30px;
+  background: #f8f9fa;
+  border-left: 4px solid #417690;
+  padding: 20px 24px;
+  border-radius: 4px;
+">
+  <h2 style="margin-top:0; color:#333;">Answer</h2>
+  <p style="font-size:15px; line-height:1.7; color:#222;">{{ result.answer }}</p>
+
+  {% if result.sources %}
+  <p style="margin-top:16px; font-size:13px; color:#666;">
+    <strong>Sources:</strong>
+    {% for source in result.sources %}
+      <span style="
+        display:inline-block;
+        background:#e8f0fe;
+        color:#1a56c4;
+        padding:2px 10px;
+        border-radius:20px;
+        margin:2px;
+        font-size:12px;
+      ">{{ source }}</span>
+    {% endfor %}
+  </p>
+  {% endif %}
+</div>
+{% endif %}
+
+{% endblock %}
