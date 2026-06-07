@@ -1,0 +1,21 @@
+version: '3.9'
+
+services:
+  web:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - SECRET_KEY=${SECRET_KEY:-your-secret-key-here}
+      - DEBUG=${DEBUG:-True}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - OPENROUTER_MODEL=${OPENROUTER_MODEL:-mistralai/mistral-7b-instruct}
+    volumes:
+      # Mount the whole /app/data folder for SQLite (not the file directly)
+      - sqlite_data:/app/data
+      - media_data:/app/media
+      - .:/app
+
+volumes:
+  sqlite_data:
+  media_data:
